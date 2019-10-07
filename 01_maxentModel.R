@@ -8,6 +8,8 @@ rm(list = ls())
 options(scipen = 999, 
         stringsAsFactors = FALSE)
 
+options(java.parameters = '-Xmx4g')
+
 # Functions to use
 dup_cell <- function(mask, df){
   cellNum <- raster::extract(mask, df[,c('Lon', 'Lat')], cellnumbers = T) 
@@ -81,8 +83,67 @@ back <- randomPoints(back_raster, nrow(occ_swd)) %>%
   as_data_frame()
 coordinates(back) <- ~ x + y
 back_swd  <- raster::extract(stk_sub, back) %>% 
-  cbind(coordinates(back), .)
-write.csv(back_swd, '../model/occ/bck_run1.csv', row.names = FALSE)
+  cbind(coordinates(back), .) %>% 
+  as.data.frame %>% 
+  rename(Lon = x,
+         Lat = y)
+write.csv(back_swd, '../model/occ/bck_run4.csv', row.names = FALSE)
+
+# MaxEnt Model
+# Evaluations using K-fold partioning
+pres.covs <- rbind(occ_swd, back_swd)
+fold <- kfold(pres.covs, k = 25)
+occtest <- pres.covs[fold == 1,]
+occtrain <- pres.covs[fold != 1,]
+
+dir.create('../model/maxent/run4')
+spp <- occ_swd
+coordinates(spp) <- ~ Lon + Lat
+bck <- back_swd
+coordinates(bck) <- ~ Lon + Lat
+mxn <- maxent(x = stk_sub, p = spp, a = bck, args = c('addsamplestobackground=true'), path = '../model/maxent/run4') 
+prd <- predict(mxn, stk_sub)
+
+
+
+y <- c(rep(1, nrow(occtrain)), rep(0, nrow(back_swd)))
+env.values <- data.frame(rbind(occtrain, back_swd))
+dir.create('../model/maxent/run1', recursive = TRUE)
+
+# Now, for all folds
+auc <- rep(NA, 25)
+max.tss <- rep(NA,5)
+maps <- list()
+e <- list()
+me <- list()
+dir_out <- paste0('../model/maxent/run1/', 1:25)
+
+for (i in 1:25){
+  occtest <- pres.covs[fold == i, ]
+  occtrain <- pres.covs[fold != i, ]
+  env.values <- data.frame(rbind(occtrain, back_swd))
+  y  <- c(rep(1, nrow(occtrain)), rep(0, nrow(back_swd)))
+  me[[i]] <- maxent(env.values[,3:ncol(env.values)], y, args = c('addsamplestobackground=true'), path = dir_out[[i]])
+  maps[[i]] <- predict(me[[i]], stk_sub)
+  e[[i]] <- evaluate(me[[i]], p = data.frame(occtest[,3:ncol(occtest)]), a = data.frame(back_swd[,3:ncol(back_swd)]))
+  auc[i] <- e[[i]]@auc
+  lines((1 - e[[i]]@TNR), e[[i]]@TPR)
+  tss <- e[[i]]@TPR + e[[i]]@TNR-1
+  max.tss[i] <- e[[i]]@t[which.max(tss)]
+}
+
+map_avg <- mean(stack(maps))
+Map('writeRaster', x = maps, filename = paste0('../model/maxent/avg/map_run_', 1:25, '.asc'))
+writeRaster(map_avg, '../model/maxent/run1/avg/map_avg.asc')
+
+dir.create('../model/rds')
+th_tss <- mean(max.tss)
+
+
+
+
+
+
 
 
 
