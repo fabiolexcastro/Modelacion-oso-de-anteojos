@@ -89,6 +89,39 @@ back_swd  <- raster::extract(stk_sub, back) %>%
          Lat = y)
 write.csv(back_swd, '../model/occ/bck_run4.csv', row.names = FALSE)
 
+# Maxent model ------------------------------------------------------------
+crossValDir <- paste0('../model/maxent/run4/rep_', 1:25)
+maps <- list()
+e <- list()
+me <- list()
+fold <- kfold(occ_swd, k = 25)
+
+for (i in 1:25){
+  occtest <- occ_swd[fold == i,]
+  occtrain <- occ_swd[fold != i,]
+  env.values <- data.frame(rbind(occtrain, back_swd))
+  me[[i]] <- dismo::maxent(x = stk_sub,
+                           p = as.data.frame(env.values[,c('Lon','Lat')]),
+                           a = as.data.frame(back_swd[,c('Lon','Lat')]), removeDuplicates = T,
+                           args = c("nowarnings","linear=true","quadratic=true","product=true","threshold=true","hinge=true","pictures=false","plots=false"),
+                           path = crossValDir[[1]])
+  maps[[i]] <- predict(me[[i]], stk_sub)
+  e[[i]] <- evaluate(me[[i]], p = data.frame(occtest[,3:ncol(occtest)]), a = data.frame(back_swd[,3:ncol(back_swd)]))
+  auc[i] <- e[[i]]@auc
+  tss <- e[[i]]@TPR + e[[i]]@TNR-1
+  max.tss[i] <- e[[i]]@t[which.max(tss)]
+  print('Done!')
+  # myFunction <- function(pos){evaluate(me[[i]]@models[[pos]], p = data.frame(occtest[,3:ncol(occtest)]), a = data.frame(back_swd[,3:ncol(back_swd)]))}
+  # e[[i]] <- map(.x = 1:5, .f = myFunction)
+  # auc[i] <- mean(unlist(lapply(1:5, function(k)flatten(e)[[k]]@auc)))
+  # for(k in 1:5){flatten(e[[i]])}
+  # tss <- e[[i]]@TPR + e[[i]]@TNR-1
+  # max.tss[i] <- e[[i]]@t[which.max(tss)]
+  # print('Done!')
+}
+
+
+
 # MaxEnt Model
 # Evaluations using K-fold partioning
 pres.covs <- rbind(occ_swd, back_swd)
@@ -103,56 +136,41 @@ bck <- back_swd
 coordinates(bck) <- ~ Lon + Lat
 mxn <- maxent(x = stk_sub, p = spp, a = bck, args = c('addsamplestobackground=true'), path = '../model/maxent/run4') 
 prd <- predict(mxn, stk_sub)
-
-
-
 y <- c(rep(1, nrow(occtrain)), rep(0, nrow(back_swd)))
 env.values <- data.frame(rbind(occtrain, back_swd))
 dir.create('../model/maxent/run1', recursive = TRUE)
 
-# Now, for all folds
+fit <- dismo::maxent(x = stk_sub,
+                     p = as.data.frame(occ_swd[,c('Lon','Lat')]),
+                     a = as.data.frame(back_swd[,c('Lon', 'Lat')]),
+                     args = c("nowarnings","replicates=25","linear=true","quadratic=true","product=true","threshold=true","hinge=true","pictures=false","plots=false"),
+                     path = '../model/maxent/run4')
+
+prd <- predict(fit, stk_sub)
+prd <- prd * 1
+names(prd) <- paste0('mxn_', 1:25)
+prd <- unstack(prd)
+Map('writeRaster', prd, paste0('../model/maxent/run4/rst/mxn_', 1:25, '.asc'))
+prd <- stack(prd)
+avg <- mean(prd)
+writeRaster(avg, '../model/maxent/run4/rst/mean_avg.asc')
+
 auc <- rep(NA, 25)
 max.tss <- rep(NA,5)
-maps <- list()
-e <- list()
-me <- list()
-dir_out <- paste0('../model/maxent/run1/', 1:25)
 
-for (i in 1:25){
-  occtest <- pres.covs[fold == i, ]
-  occtrain <- pres.covs[fold != i, ]
-  env.values <- data.frame(rbind(occtrain, back_swd))
-  y  <- c(rep(1, nrow(occtrain)), rep(0, nrow(back_swd)))
-  me[[i]] <- maxent(env.values[,3:ncol(env.values)], y, args = c('addsamplestobackground=true'), path = dir_out[[i]])
-  maps[[i]] <- predict(me[[i]], stk_sub)
-  e[[i]] <- evaluate(me[[i]], p = data.frame(occtest[,3:ncol(occtest)]), a = data.frame(back_swd[,3:ncol(back_swd)]))
-  auc[i] <- e[[i]]@auc
-  lines((1 - e[[i]]@TNR), e[[i]]@TPR)
-  tss <- e[[i]]@TPR + e[[i]]@TNR-1
-  max.tss[i] <- e[[i]]@t[which.max(tss)]
+for(i in 1:25){
+  e <- evaluate(fit@models[[i]], p = data.frame(occ_swd[,3:ncol(occ_swd)]), a = data.frame(back_swd[,3:ncol(back_swd)]))  
+  auc[[i]] <- e@auc
+  tss <- e@TPR + e@TNR - 1
+  max.tss[[i]] <- e@t[which.max(tss)]
 }
 
-map_avg <- mean(stack(maps))
-Map('writeRaster', x = maps, filename = paste0('../model/maxent/avg/map_run_', 1:25, '.asc'))
-writeRaster(map_avg, '../model/maxent/run1/avg/map_avg.asc')
+auc_avg <- mean(auc)
+tss_avg <- mean(max.tss)
 
-dir.create('../model/rds')
-th_tss <- mean(max.tss)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+avg[which(avg[] >= 0.75)] <- 1
+avg[which(avg[] < 0.75)]  <- 0
+writeRaster(avg, '../model/maxent/run4/rst/mean_avg_rcl2.asc', overwrite = TRUE)
 
 
 
